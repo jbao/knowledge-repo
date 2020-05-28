@@ -1,4 +1,3 @@
-from __future__ import print_function
 import unittest
 import json
 
@@ -7,7 +6,7 @@ from bs4 import BeautifulSoup
 from knowledge_repo import KnowledgeRepository
 from knowledge_repo.app.models import Comment, Post, User
 
-from knowledge_repo.app.app import db_session
+from knowledge_repo.app.proxies import db_session
 
 
 class CommentTest(unittest.TestCase):
@@ -19,12 +18,11 @@ class CommentTest(unittest.TestCase):
 
         self.knowledge_username = 'comment_test_user'
         with self.repo_app.app_context():
-            user = User(username=self.knowledge_username)
+            user = User(identifier=self.knowledge_username)
             if user.id is None:
                 db_session.commit()
             self.user_id = user.id
-        username_request_header = self.repo_app.config.get(
-            "AUTH_USERNAME_REQUEST_HEADER")
+        username_request_header = self.repo_app.config.get("AUTH_USER_IDENTIFIER_REQUEST_HEADER")
         self.headers = {
             username_request_header: self.knowledge_username
         }
@@ -66,7 +64,7 @@ class CommentTest(unittest.TestCase):
             assert post.status == self.repo.PostStatus.PUBLISHED
 
             # check that the number of comments rendered increased by 1
-            rv = self.app.get('/render?markdown=' + post.path,
+            rv = self.app.get('/post/' + post.path,
                               headers=self.headers)
             soup = BeautifulSoup(rv.data.decode('utf-8'), 'html.parser')
             comments = soup.findAll("div", {"class": "post_comment"})

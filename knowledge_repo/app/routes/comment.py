@@ -8,7 +8,8 @@ This includes:
 import logging
 from flask import request, Blueprint, g
 
-from ..app import db_session
+from .. import permissions
+from ..proxies import db_session, current_user
 from ..models import Comment, Post, PageView
 from ..utils.emails import send_comment_email
 
@@ -21,6 +22,7 @@ blueprint = Blueprint('comments', __name__,
 
 @blueprint.route('/comment', methods=['POST'])
 @PageView.logged
+@permissions.post_comment.require()
 def post_comment():
     """ Post a comment underneath a post """
 
@@ -40,20 +42,17 @@ def post_comment():
                              .filter(Comment.id == comment_id)
                              .first())
     else:
-        comment = None
-
-    if not comment:
         comment = Comment(post_id=post.id)
 
     comment.text = data['text']
-    comment.user_id = g.user.id
+    comment.user_id = current_user.id
     db_session.add(comment)
     db_session.commit()
 
-    send_comment_email(post_id=post.id,
-                       commenter=g.user.format_name,
+    send_comment_email(path=path,
+                       commenter=current_user.format_name,
                        comment_text=data['text'])
-    return ""
+    return "OK"
 
 
 @post_comment.object_extractor
@@ -67,6 +66,7 @@ def post_comment():
 
 @blueprint.route('/delete_comment')
 @PageView.logged
+@permissions.post_comment.require()
 def delete_comment():
     """ Delete a comment """
     try:
@@ -77,7 +77,7 @@ def delete_comment():
                               .all())
         for comment in comments:
             # you can only delete your own comments - silently fail on others
-            if comment.user_id == g.user.id:
+            if comment.user_id == current_user.id:
                 db_session.delete(comment)
         db_session.commit()
     except:

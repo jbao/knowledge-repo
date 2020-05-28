@@ -1,4 +1,3 @@
-from builtins import object
 
 import logging
 import posixpath
@@ -6,8 +5,8 @@ import posixpath
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, scoped_session, mapper
 from sqlalchemy.sql import func
-
 from sqlalchemy import Table, Column, Integer, String, DateTime, LargeBinary, MetaData
+
 from ..repository import KnowledgeRepository
 
 logger = logging.getLogger(__name__)
@@ -39,13 +38,14 @@ class DbKnowledgeRepository(KnowledgeRepository):
         postref_table = Table(table_name, metadata,
                               Column('id', Integer, primary_key=True),
                               Column('created_at', DateTime, default=func.now()),
+                              Column('updated_at', DateTime, default=func.now(), onupdate=func.current_timestamp()),
                               Column('uuid', String(512)),
                               Column('path', String(512)),
                               Column('revision', Integer, default=0),
                               Column('status', Integer, default=self.PostStatus.DRAFT.value),
                               Column('ref', String(512)),
                               Column('data', LargeBinary))
-        self.engine = create_engine(engine_uri)
+        self.engine = create_engine(engine_uri, pool_recycle=3600)
         self.session = scoped_session(sessionmaker(bind=self.engine))
         if auto_create:
             postref_table.create(self.engine, checkfirst=True)
@@ -64,7 +64,7 @@ class DbKnowledgeRepository(KnowledgeRepository):
 
     @property
     def revision(self):
-        return str(self.session.query(func.max(self.PostRef.created_at)).first()[0])
+        return str(self.session.query(func.max(self.PostRef.updated_at)).first()[0])
 
     def update(self):
         pass

@@ -4,9 +4,11 @@ import collections
 from flask import Blueprint, request, render_template
 from sqlalchemy import func
 
-from ..app import db_session
+from .. import permissions
+from ..proxies import db_session
 from ..models import PageView, Post
 from ..utils.requests import from_request_get_feed_params
+from ..utils.posts import get_posts
 
 blueprint = Blueprint('stats', __name__,
                       template_folder='../templates', static_folder='../static')
@@ -19,6 +21,7 @@ def _round_date(d):
 
 @blueprint.route('/post_stats', methods=['GET'])
 @PageView.logged
+@permissions.post_view.require()
 def post_stats():
     """ Return the total views, distinct views, total likes and total comments
         for a given post """
@@ -36,6 +39,7 @@ def post_stats():
 
 @blueprint.route('/stats', methods=['GET'])
 @PageView.logged
+@permissions.stats_view.require()
 def stats():
     """ Render the stats page, creating graphs for
         pageviews daily, weekly, post creation weekly and
@@ -74,9 +78,14 @@ def stats():
         cum_created_val += created_at_counts.get(week, 0)
         weekly_cumulative_posts[week] = cum_created_val
 
+    # count post per author
+    posts, _ = get_posts(feed_params)
+    post_per_author_count = collections.Counter([author.format_name for post in posts for author in post.authors])
+
     return render_template('stats.html',
                            feed_params=feed_params,
                            daily_pageviews=daily_pageviews,
                            weekly_posts_created_and_updated=weekly_posts_created_and_updated,
                            weekly_cumulative_posts=weekly_cumulative_posts,
-                           weekly_pageviews=weekly_pageviews)
+                           weekly_pageviews=weekly_pageviews,
+                           post_per_author_count=post_per_author_count)

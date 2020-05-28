@@ -1,20 +1,19 @@
 import os
 import sys
-import traceback
-from future.utils import raise_with_traceback
-from flask import current_app, request, g
-from flask_sqlalchemy import SQLAlchemy
-import functools
-from collections import defaultdict
 import datetime
-
-from werkzeug.local import LocalProxy
-from sqlalchemy import func, distinct, and_, select, UniqueConstraint
 import logging
+import traceback
+from flask import current_app, request
+from flask_login import UserMixin
+from flask_sqlalchemy import SQLAlchemy
+from collections import defaultdict
+
+from sqlalchemy import func, distinct, and_, select, Index, UniqueConstraint
 
 from knowledge_repo._version import __version__
 from knowledge_repo.repository import KnowledgeRepository
-from .proxies import current_repo, db_session
+from knowledge_repo.utils.types import MediumText
+from .proxies import current_user, current_repo, db_session
 from .utils.models import unique_constructor
 from .utils.search import get_keywords
 from sqlalchemy.ext.hybrid import hybrid_property
@@ -24,14 +23,10 @@ from sqlalchemy.ext.associationproxy import association_proxy
 logger = logging.getLogger(__name__)
 
 db = SQLAlchemy()
-db_session = LocalProxy(lambda: current_app.db.session)
 
 
 class IndexMetadata(db.Model):
     __tablename__ = 'index_metadata'
-    __table_args__ = (
-        UniqueConstraint('type', 'name', name='_uc_type_name'),
-    )
 
     id = db.Column(db.Integer, nullable=False, primary_key=True)
     type = db.Column(db.String(255), nullable=False)
@@ -51,8 +46,9 @@ class IndexMetadata(db.Model):
         m = db_session.query(IndexMetadata).filter(IndexMetadata.type == type).filter(IndexMetadata.name == name).first()
         if m is not None:
             m.value = value
+            m.updated_at = datetime.datetime.utcnow()
         else:
-            m = IndexMetadata(type=type, name=name, value=value)
+            m = IndexMetadata(type=type, name=name, value=value, updated_at=datetime.datetime.utcnow())
             db_session.add(m)
 
     @classmethod
@@ -108,10 +104,47 @@ class Comment(db.Model):
     updated_at = db.Column(db.DateTime, default=func.now(), onupdate=func.now())
 
 
+class ErrorLog(db.Model):
+    __tablename__ = 'errorlog'
+
+    id = db.Column(db.Integer, primary_key=True)
+    function = db.Column(db.String(100))
+    location = db.Column(db.String(255))
+    message = db.Column(db.Text())
+    traceback = db.Column(db.Text())
+    version = db.Column(db.String(100), default=__version__)
+    created_at = db.Column(db.DateTime, default=func.now())
+
+    @classmethod
+    def from_exception(cls, e):
+        tb = sys.exc_info()[-1]
+        filename, linenumber, function, code = traceback.extract_tb(sys.exc_info()[-1])[-1]
+        filename = os.path.relpath(filename, os.path.join(os.path.dirname(__file__), '..'))
+        return ErrorLog(
+            function=function,
+            location='{}:{}'.format(filename, linenumber),
+            message='{}: {}'.format(e.__class__.__name__, "; ".join(str(a) for a in e.args)),
+            traceback="\n".join(traceback.format_tb(tb))
+        )
+
+    @classmethod
+    def logged(cls, function):
+        def wrapped(*args, **kwargs):
+            try:
+                return function(*args, **kwargs)
+            except Exception as e:
+                db_session.rollback()
+                db_session.add(ErrorLog.from_exception(e))
+                db_session.commit()
+                raise e.with_traceback()
+        return wrapped
+
+
 class PageView(db.Model):
     __tablename__ = 'pageviews'
 
     id = db.Column(db.Integer, primary_key=True)
+    id_errorlog = db.Column(db.Integer)
     page = db.Column(db.String(512))
     endpoint = db.Column(db.String(255))
     user_id = db.Column(db.Integer)
@@ -120,8 +153,9 @@ class PageView(db.Model):
     object_action = db.Column(db.String(100))
     ip_address = db.Column(db.String(64))
     created_at = db.Column(db.DateTime, default=func.now())
-    error_message = db.Column(db.Text())
-    version = db.Column(db.String(100))
+    version = db.Column(db.String(100), default=__version__)
+
+    __table_args__ = (Index("object_id_type_action_index", object_id, object_type, object_action),)
 
     class logged(object):
 
@@ -133,24 +167,28 @@ class PageView(db.Model):
             return getattr(self._route, attr)
 
         def __call__(self, *args, **kwargs):
-            if not current_app.config.get('REPOSITORY_INDEXING_ENABLED', True):
+            if not current_app.config.get('INDEXING_ENABLED', True):
                 return self._route(*args, **kwargs)
 
             log = PageView(
                 page=request.full_path,
                 endpoint=request.endpoint,
-                user_id=g.user.id,
+                user_id=current_user.id,
                 ip_address=request.remote_addr,
                 version=__version__
             )
+            errorlog = None
             log.object_id, log.object_type, log.object_action, reextract_after_request = self.extract_objects(*args, **kwargs)
-            db_session.add(log)
+            db_session.add(log)  # Add log here to ensure pageviews are accurate
 
             try:
                 return self._route(*args, **kwargs)
             except Exception as e:
-                tb = traceback.extract_tb(sys.exc_info()[2])
-                log.error_message = type(e).__name__ + ': ' + str(e) + '\nTraceback (most recent call last):\n' + '\n'.join(traceback.format_list(tb[1:]))
+                db_session.rollback()  # Ensure no lingering database changes remain after crashed route
+                db_session.add(log)
+                errorlog = ErrorLog.from_exception(e)
+                db_session.add(errorlog)
+                db_session.commit()
                 raise_with_traceback(e)
             finally:
                 # Extract object id and type after response generated (if requested) to ensure
@@ -158,7 +196,8 @@ class PageView(db.Model):
                 if reextract_after_request:
                     log.object_id, log.object_type, log.object_action, _ = self.extract_objects(*args, **kwargs)
 
-                db_session.rollback()
+                if errorlog is not None:
+                    log.id_errorlog = errorlog.id
                 db_session.add(log)
                 db_session.commit()
 
@@ -192,26 +231,57 @@ class Vote(db.Model):
 
 
 @unique_constructor(
-    lambda username: username,
-    lambda query, username: query.filter(User.username == username)
+    lambda identifier: identifier,
+    lambda query, identifier: query.filter(User.identifier == identifier)
 )
-class User(db.Model):
+class User(db.Model, UserMixin):
     __tablename__ = 'users'
 
     id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(500))
     created_at = db.Column(db.DateTime, default=func.now())
+
+    identifier = db.Column(db.String(500))  # Unique identifier across all login methods
+
+    username = db.Column(db.String(500))  # Username used to log in (may differ from identifier)
+    password = db.Column(db.String(500))  # Password for local logins
+
+    name = db.Column(db.String(500))  # Name as determined by auth method
+    preferred_name = db.Column(db.String(500))  # Name as determined by user preferences
+
+    email = db.Column(db.String(500))  # Email address
+    avatar_uri = db.Column(db.Text())  # Either external url or data uri
+    active = db.Column(db.Boolean, default=True)
+
+    last_login_at = db.Column(db.DateTime)  # Date of last login
 
     _posts_assoc = db.relationship("PostAuthorAssoc")
     posts = association_proxy('_posts_assoc', 'post')  # This property should not directly modified
 
+    # Method overrides for the UserMixin class for flask_login
     @property
-    def format_name(self):
-        username_to_name = current_repo.config.username_to_name
-        return username_to_name(self.username)
+    def is_active(self):
+        return self.active
 
     @property
-    def get_subscriptions(self):
+    def is_authenticated(self):
+        return True
+
+    @property
+    def is_anonymous(self):
+        return False
+
+    def get_id(self):
+        return self.identifier
+
+    can_logout = True
+
+    # Other useful methods
+    @property
+    def format_name(self):
+        return self.preferred_name or self.name or self.identifier
+
+    @property
+    def subscriptions(self):  # TODO: make attribute style naming
         """Get the subscriptions associated with a user.
 
         Return an array of strings of tag_names
@@ -233,7 +303,7 @@ class User(db.Model):
         return out_subscriptions
 
     @property
-    def get_liked_posts(self):
+    def liked_posts(self):
         """
         :return: Posts that a user has liked
         :rtype: list
@@ -242,6 +312,8 @@ class User(db.Model):
                  .filter(Vote.user_id == self.id)
                  .all())
         post_ids = [vote.object_id for vote in votes]
+        if len(post_ids) == 0:
+            return []
         excluded_tags = current_app.config.get('EXCLUDED_TAGS', [])
         posts = (db.session.query(Post)
                  .filter(Post.id.in_(post_ids))
@@ -288,12 +360,13 @@ class Post(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     uuid = db.Column(db.String(100), unique=True)
-    path = db.Column(db.String(512), unique=True)
+    path = db.Column(db.String(512))
     project = db.Column(db.String(512), nullable=True)  # DEPRECATED
     repository = db.Column(db.String(512))
     revision = db.Column(db.Integer())
 
     title = db.Column(db.Text())
+    subtitle = db.Column(db.Text())
     tldr = db.Column(db.Text)
     keywords = db.Column(db.Text)
     thumbnail = db.Column(db.Text())
@@ -325,7 +398,7 @@ class Post(db.Model):
         for author in authors:
             if not isinstance(author, User):
                 author = author.strip()
-                author = User(username=author)
+                author = User(identifier=author)
             user_objs.append(author)
 
         self._authors = user_objs
@@ -526,6 +599,7 @@ class Post(db.Model):
         self.repository = kp.repository_uri
         self.revision = kp.revision
         self.title = headers['title']
+        self.subtitle = headers.get('subtitle')
         self.tldr = headers['tldr']
         self.authors = headers.get('authors', [])
         self.tags = headers.get('tags', [])
@@ -558,7 +632,7 @@ class Email(db.Model):
     object_type = db.Column(db.String(100))
     sent_at = db.Column(db.DateTime, default=func.now())
     subject = db.Column(db.Text)
-    text = db.Column(db.Text)
+    text = db.Column(MediumText())
 
 
 @unique_constructor(

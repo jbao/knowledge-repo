@@ -1,16 +1,17 @@
 """
 This file deals with all of the email functions.
 """
-
+import base64
 import logging
+import re
 
-from flask import render_template, current_app
+import requests
+from flask import render_template, current_app, url_for
 from flask_mail import Message
 
-from ..app import db_session
+from ..proxies import db_session
 from ..proxies import current_repo
-from ..models import Email, Subscription, User, Post
-from ..utils.render import render_post
+from ..models import Email, Subscription, User
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +22,7 @@ def usernames_to_emails(usernames):
 
 
 def subscription_email_recipients(post, tag):
-    """Check who should recieve a subscription email about this post
-    """
+    """Check who should receive a subscription email about this post"""
     db_session.expire_on_commit = False
 
     subscriptions = (db_session.query(Subscription)
@@ -52,8 +52,7 @@ def send_subscription_emails(post):
         with that tag was published to the repo
     """
     if 'mail' not in current_app.config:
-        logger.warning(
-            'Mail subsystem is not configured. Silently dropping email.')
+        logger.warning('Mail subsystem is not configured. Silently dropping email.')
         return
 
     # if this post is tagged as private - send no emails
@@ -61,6 +60,7 @@ def send_subscription_emails(post):
     for full_tag in post_full_tags:
         if full_tag in current_app.config.get("EXCLUDED_TAGS", []):
             return
+
     for tag in post.tags:
         send_subscription_email(post, tag)
 
@@ -83,27 +83,59 @@ def send_subscription_email(post, tag):
     if not recipient_users:
         return
 
-    recipients_bcc = [usernames_to_emails([user.username])[0] for user in recipient_users]
+    recipients_bcc = [usernames_to_emails([user.identifier])[0] for user in recipient_users]
 
     if not recipients_bcc:
         return
 
     default_recipients = ['knowledge_consumer@notreal.com']
-    subject = "New knowledge post with tag [{}]!".format(tag.name)
-    msg = Message(subject=subject,
-                  recipients=default_recipients,
-                  bcc=recipients_bcc)
+    subject = "New knowledge post: {}".format(post.title)
+    post_authors = [p.format_name for p in post.authors]
+    post_tags = [t.name for t in post.tags]
+    msg = Message(subject=subject, recipients=default_recipients, bcc=recipients_bcc)
 
-    # Iterate over fetched image files and attach them to email
-    post_text = render_post(post)
+    # Extract bytes from post thumbnail or fallback to the default one
+    thumb_bytes = None
+    if post.thumbnail:
+        try:
+            reg_search = re.search('data:.*;base64,(.*)', post.thumbnail)
+            if reg_search:
+                thumb_bytes = base64.b64decode(reg_search.group(1))
+            else:
+                # Download image from url
+                response = requests.get(post.thumbnail)
+                if response.ok:
+                    thumb_bytes = response.content
+        except:
+            pass
 
+    if not thumb_bytes:
+        with current_app.open_resource('static/images/default_thumbnail.png') as f:
+            thumb_bytes = f.read()
+
+    # Attach thumbnail to the email (base64 embedded images are not supported by many email clients)
+    msg.attach('thumb.png', 'image/png', thumb_bytes, 'inline', headers=[['Content-ID', '<Thumb>']])
+
+    # Plain mail
     msg.body = render_template("email_templates/subscription_email.txt",
                                full_tag=tag.name,
                                page_id=post.path,
-                               post_text=post_text,
+                               post_title=post.title,
+                               post_tldr=post.tldr,
+                               post_authors=post_authors,
+                               post_tags=post_tags,
                                knowledge_app_base_url=current_app.config['SERVER_NAME'])
 
-    msg.html = post_text
+    # Rich email
+    msg.html = render_template("email_templates/subscription_email.html",
+                               full_tag=tag.name,
+                               page_id=post.path,
+                               post_title=post.title,
+                               post_tldr=post.tldr,
+                               post_authors=post_authors,
+                               post_tags=post_tags,
+                               post_thumbnail=thumb_bytes,
+                               knowledge_app_base_url=current_app.config['SERVER_NAME'])
 
     for user in recipient_users:
         # mark email as sent just before you send the email
@@ -113,39 +145,33 @@ def send_subscription_email(post, tag):
                            object_id=post.id,
                            object_type="post",
                            subject=subject,
-                           text=post_text)
+                           text=msg.html)
         db_session.add(email_sent)
         db_session.commit()
 
     current_app.config['mail'].send(msg)
 
 
-def send_comment_email(post_id, comment_text, commenter='Someone'):
+def send_comment_email(path, comment_text, commenter='Someone'):
     if 'mail' not in current_app.config:
-        logger.warning(
-            'Mail subsystem is not configured. Silently dropping email.')
+        logger.warning('Mail subsystem is not configured. Silently dropping email.')
         return
 
-    gitpost = (db_session.query(Post)
-               .filter(Post.id == post_id)
-               .first())
-    post_title = gitpost.title
-    authors = [author.username for author in gitpost.authors]
-    post_author_emails = usernames_to_emails(authors)
+    kp = current_repo.post(path)
+    headers = kp.headers
 
-    msg = Message("Someone commented on your post!", post_author_emails)
+    msg = Message("Someone commented on your post!", usernames_to_emails(headers['authors']))
     msg.body = render_template("email_templates/comment_email.txt",
                                commenter=commenter,
                                comment_text=comment_text,
-                               post_title=post_title,
-                               post_id=post_id)
+                               post_title=headers['title'],
+                               post_url=url_for('posts.render', path=path, _external=True))
     current_app.config['mail'].send(msg)
 
 
 def send_internal_error_email(subject_line, **kwargs):
     if 'mail' not in current_app.config:
-        logger.warning(
-            'Mail subsystem is not configured. Silently dropping email.')
+        logger.warning('Mail subsystem is not configured. Silently dropping email.')
         return
     recipients = usernames_to_emails(current_repo.config.editors)
     msg = Message(subject_line, recipients)
@@ -161,7 +187,7 @@ def send_reviewer_request_email(path, reviewer):
     subject = "Someone requested a web post review from you!"
     msg = Message(subject, [reviewer])
     msg.body = render_template("email_templates/reviewer_request_email.txt",
-                               path=path)
+                               post_url=url_for('editor.editor', path=path, _external=True))
     current_app.config['mail'].send(msg)
 
 
@@ -172,14 +198,11 @@ def send_review_email(path, comment_text, commenter='Someone'):
 
     kp = current_repo.post(path)
     headers = kp.headers
-    post_title = headers['title']
-    authors = headers['authors']
-    post_author_emails = usernames_to_emails(authors)
-    subject = "Someone reviewed your post!"
-    msg = Message(subject, post_author_emails)
+
+    msg = Message("Someone reviewed your post!", usernames_to_emails(headers['authors']))
     msg.body = render_template("email_templates/review_email.txt",
                                commenter=commenter,
                                comment_text=comment_text,
-                               post_title=post_title,
-                               path=path)
+                               post_title=headers['title'],
+                               post_url=url_for('editor.editor', path=path, _external=True))
     current_app.config['mail'].send(msg)

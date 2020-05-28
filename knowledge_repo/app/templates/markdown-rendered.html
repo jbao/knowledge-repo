@@ -1,67 +1,91 @@
 {% extends "markdown-base.html" %}
 
-{% block title %} Knowledge {% endblock %}
+{% block style_links %}
+{{ super() }}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/codehilite-friendly.css')}}">
+{% endblock %}
 
 {% block content %}
 
     {{ super() }}
 
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/codehilite.css') }}">
-    <div class='container'>
-      <div id="renderedMarkdown">
-          {{ html|safe }}
-      </div>
+    <div class="renderedMarkdown">
+        <span class='stats' style='position: absolute; right: 0px; padding: 5px; color: #aaa; top: 0px;'>
+            {% if page_views >= 0 %}
+              <i class="glyphicon glyphicon-eye-open" id="pageview_stats" style='color: #9CA299'></i>
+              <div id="pageview_stats" style="display: inline-block">
+                Viewed {{ page_views }} times by {{ unique_views }} different users
+              </div>
+            {% endif %}
+            {% if likes %}
+              <i class="glyphicon glyphicon-heart glyphicon-clickable pop" style="font-size:16pt; vertical-align: top;" id="tooltip-unlike" data-placement="bottom"
+               data-trigger="#tooltip-like"
+               data-container="body"
+               data-toggle="popover"
+               data-content='<div>Unlike This Post</div>'></i>
+            {% else %}
+              <i class="glyphicon glyphicon-heart-empty glyphicon-clickable pop" style="font-size:16pt; vertical-align: top;" id="tooltip-like" data-placement="bottom"
+               data-trigger="#tooltip-like"
+               data-container="body"
+               data-toggle="popover"
+               data-content='<div>Like This Post</div>'></i>
+            {% endif %}
+            {% if total_likes %}
+            + {{ total_likes }}
+            {% endif %}
+        </span>
+        {{ html|safe }}
     </div>
 
-    <hr/>
-    <div class="row">
-      <div class="col-md-12">
-        <h2> {{ comments | length }} Comments </h2>
-        </br>
-        <div>
-          <div class="row">
-            <div class="col-md-12">
-              <textarea class="form-control" type="text" id="comment-text" style="height:87px;" placeholder="Leave a comment..."></textarea>
-            </div>
-          </div>
-        </div>
-        </br>
-        <div>
-          <button class="btn btn-primary" id="post_comment_btn">Post Comment</button>
-        </div>
-      </div>
-    </div>
-
-    <br>
-
-    <div class="row">
-      <div class="col-md-12">
-        {% for item in comments %}
-          {% set messageId = item.id %}
-          <div class="panel">
-            <div class="panel-header panel-light">
+    <div class="container-fluid">
+        <div class="row">
+          <div class="col-md-12">
+            <h2> {{ comments | length }} Comments </h2>
+            </br>
+            <div>
               <div class="row">
-                <div class="col-md-11">
-                  <div class="post_comment">
-                    Posted by <b>{{ item.author }}</b> on {{ item.created_at_fmt }}
-                  </div>
-                </div>
-                <div class="col-md-1">
-                  <p style="text-align:right">
-                    <i class="glyphicon glyphicon-remove-sign" id="delete_comment__{{ messageId }}"></i>
-                  </p>
+                <div class="col-md-12">
+                  <textarea class="form-control" type="text" id="comment-text" style="height:87px;" placeholder="Leave a comment..."></textarea>
                 </div>
               </div>
             </div>
-            <div class="panel-body panel-light">
-              <p> {{ item.text|safe }} </p>
+            </br>
+            <div>
+              <button class="btn btn-primary" id="post_comment_btn">Post Comment</button>
             </div>
           </div>
-      {% endfor %}
-      </div>
-      </br>
+        </div>
+
+        <br>
+
+        <div class="row">
+          <div class="col-md-12">
+            {% for item in comments %}
+              {% set messageId = item.id %}
+              <div class="panel">
+                <div class="panel-header panel-light">
+                  <div class="row">
+                    <div class="col-md-11">
+                      <div class="post_comment">
+                        Posted by <b>{{ item.author }}</b> on {{ item.created_at|format_date }}
+                      </div>
+                    </div>
+                    <div class="col-md-1">
+                      <p style="text-align:right">
+                        <i class="glyphicon glyphicon-remove-sign" id="delete_comment__{{ messageId }}"></i>
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <div class="panel-body panel-light">
+                  <p> {{ item.text|safe }} </p>
+                </div>
+              </div>
+          {% endfor %}
+          </div>
+          </br>
+        </div>
     </div>
-  </div>
 {% endblock %}
 
 {% block scripts %}
@@ -84,20 +108,25 @@
   });
 </script>
 <script type="text/javascript"
-  src="https://cdn.mathjax.org/mathjax/latest/MathJax.js">
+  src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js">
 </script>
 
 <script>
 $(document).on('ready', function(){
   // Make the Rendered Markdown Button active
-  $(".btn-rendered").addClass("btn-active");
+  $(".tab-rendered").addClass('active');
+
+  // Activate scrollspy for dynamic highlighting the table of contents
+  $('body').scrollspy({ target: '.toc', offset: 71 })
+
+  // Wrap all tables in a div to allow for centering with overscroll
+  $('.renderedMarkdown table').wrap("<div class='table-wrapper'></div>")
 
   // Initialize headers
   helpersJx.linkifyHeaders();
 
   // Initialize comments
   var post_path = '{{ post_path }}';
-  var post_id = '{{ post_id }}';
 
   $("#post_comment_btn").on('click', function(){
       comment_author = '{{ username }}';
@@ -121,11 +150,65 @@ $(document).on('ready', function(){
   $(document.body).on('click',"button[id^=tag-subscription]",function () {
     tagsJx.addTagSubscriptionListener($(this)[0]);
   });
+
+  // Add code folding
+  $chunks = $('.codehilite');
+  $chunks.each(function () {
+		var orig_height = $(this).get(0).scrollHeight;
+		$('pre', this).prepend("<div class=\"codetoggle\">↕</div>");
+    });
+
+  // function to toggle chunk visibility
+  $('.codetoggle').click(function() {
+    var label = $(this).html();
+    if ($(this).data("expansion_status") == "expanded") {
+      $(this).data("expansion_status", "collapsed");
+	  var orig_height = $(this).parent().get(0).scrollHeight;
+	  var new_height = orig_height + 11;
+	  $(this).parent().css("overflow","auto");
+	  $(this).parent().animate({height: new_height+"px"}, 200);
+    } else {
+      $(this).data("expansion_status", "expanded");
+	  $(this).parent().css("overflow","hidden");
+	  $(this).parent().animate({height: "35px"}, 200);
+    }
+  });
+
+  $maindiv = $('.renderedMarkdown');
+  $maindiv.prepend("<div class=\"codetoggleall\">Collapse All Code</div>");
+
+  var toggleCode = function() {
+    var label = $(this).html();
+    if (label.indexOf("Expand All Code") >= 0) {
+      $(this).html(label.replace("Expand All Code", "Collapse All Code"));
+	  $(".codetoggle").each(function() {
+		  var label = $(this).html();
+		  $(this).html(label.replace("Expand", "Collapse"));
+		  var orig_height = $(this).parent().get(0).scrollHeight;
+		  var new_height = orig_height + 11;
+		  $(this).parent().css("overflow","auto");
+		  $(this).parent().css("height",new_height+"px");
+	  });
+    } else {
+      $(this).html(label.replace("Collapse All Code", "Expand All Code"));
+	  $(".codetoggle").each(function() {
+		  var label = $(this).html();
+		  $(this).parent().css("overflow","hidden");
+		  $(this).parent().css("height","35px");
+		  $(this).html(label.replace("Collapse", "Expand"));
+	  });
+    }
+  };
+
+  $('.codetoggleall').click(toggleCode);
+
+  {% if collapse_code %}
+    $('.codetoggleall').trigger( "click" )
+  {% endif %}
 })
 
 //Turn all the headers to be links
-//h1 = Title, don't want that
-var all_headers = [$("h2"), $("h3"), $("h4"), $("h5"), $("h6")]
+var all_headers = [$("h1"), $("h2"), $("h3"), $("h4"), $("h5"), $("h6")]
 $.each(all_headers, function(index, value){
   $.each(value, function(i, v){
     var inner_html = v.innerHTML
@@ -136,9 +219,7 @@ $.each(all_headers, function(index, value){
 })
 
 //turn all the tags into links, similar to what's done on the feed page
-var markdown = $("#renderedMarkdown")[0]
-var metadata = markdown.getElementsByTagName("p")[0]
-var tags = metadata.getElementsByTagName("strong")[3]
+var tags = $(".renderedMarkdown .metadata .tags")[0]
 var tags_list = {{ tags_list|safe }}
 var subscriptions_list = {{ user_subscriptions | safe }}
 $.each(tags_list, function(i,tag){
@@ -176,7 +257,7 @@ $.each(tags_list, function(i,tag){
   if (i == 0){
     ahref.innerHTML = " "
     colon = document.createElement("text")
-    colon.innerHTML = ": "
+    colon.innerHTML = "<b>Tags</b>: "
     tags.appendChild(colon)
   }
   ahref.innerHTML = ahref.innerHTML + tag_name
@@ -189,7 +270,7 @@ $.each(tags_list, function(i,tag){
 })
 tags.nextSibling.remove()
 
-$(tags).after("<i class='glyphicon glyphicon-edit icon-gray' style='font-size:12pt; padding-left:4px' id='tooltip-edit_tags'></i>")
+tags.innerHTML += "<i class='glyphicon glyphicon-edit icon-gray' style='font-size:12pt; padding-left:4px' id='tooltip-edit_tags'></i>"
 
 $(".pop").popover({ trigger: "manual" , html: true, animation:false, delay: 100})
   .on("mouseenter", function () {
@@ -329,4 +410,3 @@ $('#tooltip-edit_tags').click(function(){
 
 </script>
 {% endblock %}
-

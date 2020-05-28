@@ -2,7 +2,7 @@ import unittest
 from bs4 import BeautifulSoup
 
 from knowledge_repo import KnowledgeRepository
-from knowledge_repo.app.app import db_session
+from knowledge_repo.app.proxies import db_session
 from knowledge_repo.app.models import PageView, Comment, Vote
 from sqlalchemy import func
 
@@ -26,7 +26,7 @@ class FeedTest(unittest.TestCase):
         assert (rv.status == "200 OK")
         data = rv.data.decode('utf-8')
         soup = BeautifulSoup(data, 'html.parser')
-        all_posts = soup.findAll('div', {'class': 'row row-space-4 panel feed-post'})
+        all_posts = soup.findAll('div', {'class': 'row feed-post'})
         self.data = all_posts
 
     def test02_test_link_to_post(self):
@@ -95,13 +95,13 @@ class FeedTest(unittest.TestCase):
         posts = self.data
 
         for post in posts:
-            author = post.findAll('li', {'class': 'feed-author'})
+            author = post.findAll('span', {'class': 'feed-authors'})
             assert author
 
-            date = post.findAll('li', {'class': 'feed-date'})
+            date = post.findAll('span', {'class': 'feed-dates'})
             assert date
 
-            tags = post.findAll('li', {'class': 'feed-tags'})
+            tags = post.findAll('span', {'class': 'feed-tags'})
             assert tags
 
             image = post.findAll('img')
@@ -118,7 +118,7 @@ class FeedTest(unittest.TestCase):
 
         data = rv.data.decode('utf-8')
         soup = BeautifulSoup(data, 'html.parser')
-        all_posts = soup.findAll('div', {'class': 'row row-space-4 panel feed-post'})
+        all_posts = soup.findAll('div', {'class': 'row feed-post'})
         assert not all_posts
 
     def test06_real_filter(self):
@@ -132,8 +132,9 @@ class FeedTest(unittest.TestCase):
 
         data = rv.data.decode('utf-8')
         soup = BeautifulSoup(data, 'html.parser')
-        all_posts = soup.findAll('div', {'class': 'row row-space-4 panel feed-post'})
+        all_posts = soup.findAll('div', {'class': 'row feed-post'})
         assert len(all_posts) == 3, "Expected 3 posts, found {}".format(len(all_posts))
+
 
 if __name__ == '__main__':
     unittest.main()

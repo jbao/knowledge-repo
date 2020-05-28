@@ -1,12 +1,10 @@
 {% extends "markdown-base.html" %}
 
-{% block title %} Knowledge {% endblock %}
-
 {% block content %}
 
     {{ super() }}
 
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/codehilite.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/codehilite-friendly.css') }}">
     <div id="renderedMarkdown">
       <textarea id="source">
         {{ html|safe }}
@@ -45,4 +43,3 @@
 </script>
 
 {% endblock %}
-

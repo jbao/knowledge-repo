@@ -1,61 +1,68 @@
 import sys
 
 import markdown
+from markdown.extensions import toc
+
+import pygments
 from flask import url_for
+from jinja2 import Template
 from knowledge_repo.post import KnowledgePost
 
-MARKDOWN_EXTENSTIONS = ['markdown.extensions.extra',
-                        'markdown.extensions.abbr',
-                        'markdown.extensions.attr_list',
-                        'markdown.extensions.def_list',
-                        'markdown.extensions.fenced_code',
-                        'markdown.extensions.footnotes',
-                        'markdown.extensions.tables',
-                        'markdown.extensions.smart_strong',
-                        'markdown.extensions.admonition',
-                        'markdown.extensions.codehilite',
-                        'markdown.extensions.headerid',
-                        'markdown.extensions.meta',
-                        'markdown.extensions.sane_lists',
-                        'markdown.extensions.smarty',
-                        'markdown.extensions.toc(baselevel=3)',
-                        'markdown.extensions.wikilinks']
+MARKDOWN_EXTENSIONS = ['extra',
+                       'abbr',
+                       'attr_list',
+                       'def_list',
+                       'fenced_code',
+                       'footnotes',
+                       'tables',
+                       'admonition',
+                       'codehilite',
+                       'meta',
+                       'sane_lists',
+                       'smarty',
+                       toc.TocExtension(baselevel=1),
+                       'wikilinks',
+                       'nl2br']
 
 
 def render_post_tldr(post):
     if isinstance(post, KnowledgePost):
-        return markdown.Markdown(extensions=MARKDOWN_EXTENSTIONS).convert(post.headers.get('tldr'))
+        return markdown.Markdown(extensions=MARKDOWN_EXTENSIONS).convert(post.headers.get('tldr').strip())
     else:
-        return markdown.Markdown(extensions=MARKDOWN_EXTENSTIONS).convert(post.tldr)
+        return markdown.Markdown(extensions=MARKDOWN_EXTENSIONS).convert(post.tldr.strip())
 
 
 def render_post_header(post):
 
-    header_template = """
-    <h1>{title}</h1>
-    <p id='metadata'>
-    <strong>Author(s): </strong>{author_hrefs} <br>
-    <strong>Date Created</strong>: {date_created}<br>
-    <strong>Date Updated</strong>: {date_updated}<br>
-    <strong>Tags</strong><text>: </text><br>
-    <strong>TLDR</strong>: {tldr}<br>
-    </p>
-    """
+    header_template = Template("""
+    <div class='metadata'>
+    <span class='title'>{{title}}</span>
+    {% if subtitle %}<span class='subtitle'>{{subtitle}}</span>{% endif %}
+    <span class='authors'>{{authors}}</span>
+    <span class='date_created'>{{date_created}}</span>
+    <span class='date_updated'>(Last Updated: {{date_updated}})</span>
+    <span class='tldr'>{{tldr}}</span>
+    <span class='tags'></span>
+    </div>
+    """)
+
+    def get_authors(usernames, authors):
+        authors = ["<a href='{}'>{}</a>".format(url_for('index.render_feed', authors=username), author) for username, author in zip(usernames, authors)]
+        return ' and '.join(', '.join(authors).rsplit(', ', 1))
 
     if isinstance(post, KnowledgePost):
-        return header_template.format(title=post.headers['title'],
-                                      author_hrefs=', '.join(post.headers['authors']),
-                                      date_created=post.headers['created_at'].isoformat(),
-                                      date_updated=post.headers['updated_at'].isoformat(),
+        return header_template.render(title=post.headers['title'],
+                                      subtitle=post.headers.get('subtitle'),
+                                      authors=get_authors(post.headers['authors'], post.headers['authors']),
+                                      date_created=post.headers['created_at'].strftime("%B %d, %Y"),
+                                      date_updated=post.headers['updated_at'].strftime("%B %d, %Y"),
                                       tldr=render_post_tldr(post))
     else:
-        author_hrefs = ', '.join(["<a href='{}'>{}</a>".format(
-            url_for('index.render_feed', authors=author.username), author.format_name)
-            for author in post.authors])
-        return header_template.format(title=post.title,
-                                      author_hrefs=author_hrefs,
-                                      date_created=post.created_at.isoformat(),
-                                      date_updated=post.updated_at.isoformat(),
+        return header_template.render(title=post.title,
+                                      subtitle=post.subtitle,
+                                      authors=get_authors([author.identifier for author in post.authors], [author.format_name for author in post.authors]),
+                                      date_created=post.created_at.strftime("%B %d, %Y"),
+                                      date_updated=post.updated_at.strftime("%B %d, %Y"),
                                       tldr=render_post_tldr(post))
 
 
@@ -65,24 +72,35 @@ def render_post_raw(post):
     else:
         raw_post = post.text.encode('ascii', 'ignore')
 
-    # NOTE: `str.encode()` returns a `bytes` object in Python 3
-    if sys.version_info.major >= 3:
-        return raw_post.decode('ascii', 'ignore')
+    raw_post = pygments.highlight(
+        code=raw_post,
+        lexer=pygments.lexers.get_lexer_by_name('md'),
+        formatter=pygments.formatters.get_formatter_by_name('html')
+    )
+
     return raw_post
 
 
-def render_post(post):
+def render_post(post, with_toc=False):
     """
     Renders the markdown as html
     """
+    from knowledge_repo.converters.html import HTMLConverter
+
     def intra_knowledge_urlmapper(name, url):
         if name == 'a' and url.startswith('knowledge:'):
-            return url_for('render.render', markdown=url.split('knowledge:')[1]).replace('%2F', '/')  # Temporary fix before url revamp
+            return url_for('posts.render', path=url.split('knowledge:')[1]).replace('%2F', '/')  # Temporary fix before url revamp
         return None
 
-    html = render_post_header(post) + (post if isinstance(post, KnowledgePost) else post.kp).to_string('html',
-                                                                                                       skip_headers=True,
-                                                                                                       urlmappers=[intra_knowledge_urlmapper])
+    md, html = HTMLConverter(post if isinstance(post, KnowledgePost) else post.kp)._render_markdown(skip_headers=True, urlmappers=[intra_knowledge_urlmapper])
+
+    html = render_post_header(post) + html
+
+    if with_toc:
+        return {
+            "html": html,
+            "toc": md.toc if md is not None else None
+        }
     return html
 
 
