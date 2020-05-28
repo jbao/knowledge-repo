@@ -42,6 +42,7 @@ rmd_file=$(mktemp).Rmd
 `dirname $0`/scripts/knowledge_repo --repo="git://${test_repo_path}" --dev create Rmd $rmd_file
 md_file=$(mktemp).md
 `dirname $0`/scripts/knowledge_repo --repo="git://${test_repo_path}" --dev create md $md_file
+cat $md_file
 
 `dirname $0`/scripts/knowledge_repo --repo="git://${test_repo_path}" --dev add $ipynb_file -p projects/test/create_ipynb_test -m "Test create ipynb" --branch master
 `dirname $0`/scripts/knowledge_repo --repo="git://${test_repo_path}" --dev add $rmd_file -p projects/test/create_Rmd_test -m "Test create rmd" --branch master
